@@ -12,7 +12,6 @@ mongoose.connect(mongoURI)
     .catch(err => console.error("❌ Database Connection Error:", err));
 
 // --- Database Schemas ---
-
 const BabySchema = new mongoose.Schema({
     ask: { type: String, required: true, lowercase: true },
     ans: { type: String, required: true },
@@ -21,9 +20,10 @@ const BabySchema = new mongoose.Schema({
 const Baby = mongoose.model('babies', BabySchema);
 
 const UnansweredSchema = new mongoose.Schema({
-    question: { type: String, required: true, lowercase: true, unique: true },
+    question: { type: String, required: true, lowercase: true },
     addedAt: { type: Date, default: Date.now }
 });
+// Unique Index সমস্যা এড়াতে এটি ডাইনামিক রাখা হয়েছে
 const Unanswered = mongoose.model('unanswered', UnansweredSchema);
 
 // --- Gemini AI Function ---
@@ -38,53 +38,57 @@ async function getAIResponse(question) {
         });
         return response.data.candidates[0].content.parts[0].text.trim();
     } catch (error) {
+        console.error("Gemini Error:", error.message);
         return "Ami ekhon ektu confuse, pore kotha boli?";
     }
 }
 
 // --- API Endpoints ---
 
-// 1. Chat Response (Fixed Auto-Save Logic)
+// 1. Chat Response (Unanswered Save Fixed)
 app.get('/api/bby', async (req, res) => {
     const text = req.query.text ? req.query.text.toLowerCase().trim() : null;
     if (!text) return res.json({ error: "Please provide text!" });
 
-    const results = await Baby.find({ ask: text });
-    
-    if (results.length > 0) {
-        const randomAns = results[Math.floor(Math.random() * results.length)];
-        return res.json({ reply: randomAns.ans, source: "database" });
-    } else {
-        // লজিক আপডেট: AI উত্তরের জন্য অপেক্ষা করার আগেই প্রশ্নটি Unanswered-এ সেভ করা হচ্ছে
-        try {
-            await Unanswered.findOneAndUpdate(
-                { question: text },
-                { question: text },
-                { upsert: true, new: true }
-            );
-        } catch (e) { console.log("Save error:", e.message); }
+    try {
+        const results = await Baby.find({ ask: text });
+        
+        if (results.length > 0) {
+            const randomAns = results[Math.floor(Math.random() * results.length)];
+            return res.json({ reply: randomAns.ans, source: "database" });
+        } else {
+            // ফিক্স: প্রথমে চেক করা হচ্ছে প্রশ্নটি কি অলরেডি unanswered লিস্টে আছে?
+            const exist = await Unanswered.findOne({ question: text });
+            if (!exist) {
+                await Unanswered.create({ question: text });
+                console.log(`📌 New unanswered question saved: ${text}`);
+            }
 
+            const aiReply = await getAIResponse(text);
+            res.json({ reply: aiReply, source: "Gemini AI" });
+        }
+    } catch (dbError) {
+        console.error("Database Error in /api/bby:", dbError.message);
         const aiReply = await getAIResponse(text);
-        res.json({ reply: aiReply, source: "Gemini AI" });
+        res.json({ reply: aiReply, source: "Gemini AI (DB Error)" });
     }
 });
 
-// 2. Teach
+// 2. Teach (New logic: delete from unanswered)
 app.get('/api/bby/teach', async (req, res) => {
     const { ask, ans, teacher } = req.query;
     if (!ask || !ans) return res.json({ error: "Provide both 'ask' and 'ans'!" });
 
     try {
         const askText = ask.toLowerCase().trim();
-        const newData = new Baby({ 
+        await Baby.create({ 
             ask: askText, 
             ans: ans.trim(), 
             teacher: teacher || "Unknown" 
         });
-        await newData.save();
 
-        // প্রশ্নটি শেখানো হয়ে গেলে unanswered লিস্ট থেকে ডিলিট করে দিবে
-        await Unanswered.deleteOne({ question: askText });
+        // প্রশ্ন শেখানো শেষ, তাই লিস্ট থেকে মুছে দিন
+        await Unanswered.deleteMany({ question: askText });
 
         res.json({ status: "success", message: "Teach successful!" });
     } catch (err) {
@@ -92,24 +96,12 @@ app.get('/api/bby/teach', async (req, res) => {
     }
 });
 
-// 3. Remove
-app.get('/api/bby/remove', async (req, res) => {
-    const { ask, ans } = req.query;
-    if (!ask || !ans) return res.json({ status: "failed" });
-
-    try {
-        await Baby.deleteOne({ ask: ask.toLowerCase().trim(), ans: ans.trim() });
-        res.json({ status: "success" });
-    } catch (err) { res.json({ status: "error" }); }
-});
-
-// 4. Total Entries
+// বাকি সব এন্ডপয়েন্ট (total, list, top, questions, remove) আগের মতই থাকবে...
 app.get('/api/bby/total', async (req, res) => {
     const count = await Baby.countDocuments();
     res.json({ total_commands: count });
 });
 
-// 5. List
 app.get('/api/bby/list', async (req, res) => {
     const list = await Baby.aggregate([
         { $group: { _id: "$teacher", count: { $sum: 1 } } },
@@ -118,7 +110,6 @@ app.get('/api/bby/list', async (req, res) => {
     res.json({ teachers: list });
 });
 
-// 6. Top 10
 app.get('/api/bby/top', async (req, res) => {
     const top = await Baby.aggregate([
         { $group: { _id: "$teacher", count: { $sum: 1 } } },
@@ -129,7 +120,6 @@ app.get('/api/bby/top', async (req, res) => {
     res.json({ top_10_teachers: top });
 });
 
-// 7. Get Questions (For !nt)
 app.get('/api/bby/questions', async (req, res) => {
     const type = req.query.type;
     try {
@@ -142,20 +132,28 @@ app.get('/api/bby/questions', async (req, res) => {
         } else {
             const count = await Unanswered.countDocuments();
             if (count === 0) {
-                // কোনো নতুন প্রশ্ন না থাকলে ডাটাবেজ থেকে র্যান্ডম দিবে
                 const bCount = await Baby.countDocuments();
+                if (bCount === 0) return res.json({ question: "Kemon acho?" });
                 const bRandom = Math.floor(Math.random() * bCount);
                 const bEntry = await Baby.findOne().skip(bRandom);
-                return res.json({ question: bEntry ? bEntry.ask : "Kemon acho?" });
+                return res.json({ question: bEntry.ask });
             }
             const random = Math.floor(Math.random() * count);
             const entry = await Unanswered.findOne().skip(random);
             res.json({ question: entry.question });
         }
-    } catch (err) { res.json({ error: "Error" }); }
+    } catch (err) { res.json({ error: "Error fetching questions" }); }
+});
+
+app.get('/api/bby/remove', async (req, res) => {
+    const { ask, ans } = req.query;
+    try {
+        await Baby.deleteOne({ ask: ask.toLowerCase().trim(), ans: ans.trim() });
+        res.json({ status: "success" });
+    } catch (err) { res.json({ status: "error" }); }
 });
 
 app.get('/', (req, res) => res.json({ status: "running" }));
 
 app.listen(PORT, () => console.log(`🚀 NAWAB-API on port ${PORT}`));
-                           
+    
