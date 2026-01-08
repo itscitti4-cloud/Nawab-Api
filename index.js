@@ -19,23 +19,34 @@ const BabySchema = new mongoose.Schema({
 });
 const Baby = mongoose.model('babies', BabySchema);
 
-// --- AI Response Function (যদি ডাটাবেজে উঃ না থাকে) ---
+// --- Gemini Official AI Response Function ---
 async function getAIResponse(question) {
     try {
-        // Dipto API বা অন্য কোনো AI API ব্যবহার করা হচ্ছে
-        const response = await axios.get(`https://noobs-api.top/dipto/gemini?prompt=${encodeURIComponent(question)}`);
-        return response.data.reply || "I am confused right now!";
+        const GEMINI_API_KEY = "AIzaSyCRSqp3e_s0BACEaUiLjWOLHRDFyx5tSjo"; // আপনার দেওয়া API Key
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+        
+        // বটকে বাংলিশে কথা বলার জন্য ইনস্ট্রাকশন দেওয়া হয়েছে
+        const prompt = `User question: "${question}". Answer this question in Romanized Bengali (Banglish) only. Examples: "Kemon acho?", "Ami bhalo achi", "Ki korcho?". Keep it short and friendly.`;
+
+        const response = await axios.post(url, {
+            contents: [{
+                parts: [{ text: prompt }]
+            }]
+        });
+
+        return response.data.candidates[0].content.parts[0].text.trim();
     } catch (error) {
-        return "I don't know the answer and I'm having trouble connecting to my brain (AI).";
+        console.error("Gemini Error:", error.response ? error.response.data : error.message);
+        return "Ami ekhon ektu confuse, pore kotha boli?";
     }
 }
 
 // --- API Endpoints ---
 
-// 1. Chat Response (Database + AI Backup)
+// 1. Chat Response (Database + Gemini AI)
 app.get('/api/bby', async (req, res) => {
     const text = req.query.text;
-    if (!text) return res.json({ error: "Please provide text! Example: /api/bby?text=hello" });
+    if (!text) return res.json({ error: "Please provide text!" });
 
     const results = await Baby.find({ ask: text.toLowerCase() });
     
@@ -44,7 +55,7 @@ app.get('/api/bby', async (req, res) => {
         res.json({ reply: randomAns.ans, source: "database" });
     } else {
         const aiReply = await getAIResponse(text);
-        res.json({ reply: aiReply, source: "AI" });
+        res.json({ reply: aiReply, source: "Gemini AI" });
     }
 });
 
@@ -58,47 +69,31 @@ app.get('/api/bby/teach', async (req, res) => {
     res.json({ status: "success", message: "Teach successful!", data: { ask, ans, teacher: teacher || "Unknown" } });
 });
 
-// 3. Remove (ডাটা রিমুভ করা)
+// ৩. Remove, ৪. Total, ৫. List, ৬. Top কমান্ডগুলো আপনার আগের কোডের মতোই থাকবে
 app.get('/api/bby/remove', async (req, res) => {
     const { ask, ans } = req.query;
     const result = await Baby.deleteOne({ ask: ask.toLowerCase(), ans: ans });
-    if (result.deletedCount > 0) {
-        res.json({ status: "success", message: "Data removed!" });
-    } else {
-        res.json({ status: "failed", message: "No matching data found to remove." });
-    }
+    res.json(result.deletedCount > 0 ? { status: "success" } : { status: "failed" });
 });
 
-// 4. Total (মোট ডাটা সংখ্যা)
 app.get('/api/bby/total', async (req, res) => {
     const count = await Baby.countDocuments();
     res.json({ total_commands: count });
 });
 
-// 5. List (সব টিচারের লিস্ট)
 app.get('/api/bby/list', async (req, res) => {
-    const list = await Baby.aggregate([
-        { $group: { _id: "$teacher", count: { $sum: 1 } } },
-        { $project: { teacher_name: "$_id", teach_count: "$count", _id: 0 } }
-    ]);
+    const list = await Baby.aggregate([{ $group: { _id: "$teacher", count: { $sum: 1 } } }]);
     res.json({ teachers: list });
 });
 
-// 6. Top 10 (সেরা ১০ টিচার)
 app.get('/api/bby/top', async (req, res) => {
-    const topTeachers = await Baby.aggregate([
-        { $group: { _id: "$teacher", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 },
-        { $project: { teacher_name: "$_id", teach_count: "$count", _id: 0 } }
-    ]);
-    res.json({ top_10_teachers: topTeachers });
+    const top = await Baby.aggregate([{ $group: { _id: "$teacher", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]);
+    res.json({ top_10_teachers: top });
 });
 
-// Root Route
 app.get('/', (req, res) => {
-    res.json({ message: "Welcome to NAWAB-API", endpoints: ["/api/bby", "/api/bby/teach", "/api/bby/total", "/api/bby/list", "/api/bby/top"] });
+    res.json({ message: "Welcome to NAWAB-API with Gemini Banglish support" });
 });
 
 app.listen(PORT, () => console.log(`🚀 NAWAB-API is running on port ${PORT}`));
-        
+                                       
