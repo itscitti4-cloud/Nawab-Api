@@ -57,7 +57,7 @@ app.get('/api/bby', async (req, res) => {
     }
 });
 
-// 2. Teach (মাল্টি-টিচিং সাপোর্ট করে)
+// 2. Teach
 app.get('/api/bby/teach', async (req, res) => {
     const { ask, ans, teacher } = req.query;
     if (!ask || !ans) return res.json({ error: "Provide both 'ask' and 'ans'!" });
@@ -75,7 +75,7 @@ app.get('/api/bby/teach', async (req, res) => {
     }
 });
 
-// 3. Remove (সুনির্দিষ্ট প্রশ্ন ও উত্তর রিমুভ করার জন্য আপডেট করা হয়েছে)
+// 3. Remove
 app.get('/api/bby/remove', async (req, res) => {
     const { ask, ans } = req.query;
     if (!ask || !ans) return res.json({ status: "failed", message: "Missing ask or ans" });
@@ -122,9 +122,24 @@ app.get('/api/bby/top', async (req, res) => {
     res.json({ top_10_teachers: top });
 });
 
+// 🆕 7. Get Random Question (For !nt command)
+app.get('/api/bby/questions', async (req, res) => {
+    try {
+        const count = await Baby.countDocuments();
+        if (count === 0) {
+            return res.json({ question: "Tumi kemon acho?" }); // Default if DB empty
+        }
+        const random = Math.floor(Math.random() * count);
+        const randomEntry = await Baby.findOne().skip(random);
+        res.json({ question: randomEntry.ask });
+    } catch (err) {
+        res.json({ error: "Error fetching question" });
+    }
+});
+
 app.get('/', (req, res) => {
-    res.json({ message: "Welcome to NAWAB-API with Multiple Teach & Remove Support" });
+    res.json({ message: "Welcome to NAWAB-API with !nt Support" });
 });
 
 app.listen(PORT, () => console.log(`🚀 NAWAB-API is running on port ${PORT}`));
-        
+            
