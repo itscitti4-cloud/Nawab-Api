@@ -1,131 +1,96 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- MongoDB Connection ---
-const mongoURI = "mongodb+srv://shahryarsabu_db_user:7jYCAFNDGkemgYQI@cluster0.rbclxsq.mongodb.net/text?retryWrites=true&w=majority&appName=Cluster0";
+// ডাটাবেজ নাম 'text' নিশ্চিত করা হয়েছে
+const mongoURI = "mongodb+srv://shahryarsabu_db_user:7jYCAFNDGkemgYQI@cluster0.rbclxsq.mongodb.net/text?retryWrites=true&w=majority";
 
-// কানেকশন অপশনসহ মঙ্গোডিবি কানেক্ট করুন
 mongoose.connect(mongoURI)
-    .then(() => console.log("✅ NAWAB-API connected to MongoDB"))
+    .then(() => console.log("✅ NAWAB-API connected to MongoDB (Database: text)"))
     .catch(err => console.error("❌ Database Connection Error:", err));
 
-// --- Database Schemas & Models ---
-
-// কালেকশন নেম সরাসরি সেট করা হয়েছে যাতে মঙ্গোডিবি নিজেই ফোল্ডার তৈরি করে
-const babySchema = new mongoose.Schema({
+// --- Database Models ---
+const Baby = mongoose.model('babies', new mongoose.Schema({
     ask: { type: String, required: true, lowercase: true },
     ans: { type: String, required: true },
     teacher: { type: String, default: "Unknown" }
-});
-const Baby = mongoose.model('babies', babySchema);
+}));
 
-const unansweredSchema = new mongoose.Schema({
+const Unanswered = mongoose.model('unanswered', new mongoose.Schema({
     question: { type: String, required: true, lowercase: true },
     addedAt: { type: Date, default: Date.now }
-});
-// কালেকশনের নাম 'unanswered' হিসেবে ফিক্স করা হলো
-const Unanswered = mongoose.model('unanswered', unansweredSchema, 'unanswered');
-
-// --- Gemini AI Function ---
-async function getAIResponse(question) {
-    try {
-        const GEMINI_API_KEY = "AIzaSyCRSqp3e_s0BACEaUiLjWOLHRDFyx5tSjo"; 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-        const prompt = `User question: "${question}". Answer this question in Romanized Bengali (Banglish) only. Keep it short and friendly.`;
-
-        const response = await axios.post(url, {
-            contents: [{ parts: [{ text: prompt }] }]
-        });
-        return response.data.candidates[0].content.parts[0].text.trim();
-    } catch (error) {
-        return "Ami ekhon ektu confuse, pore kotha boli?";
-    }
-}
+}), 'unanswered');
 
 // --- API Endpoints ---
 
-// ১. চ্যাট রেসপন্স এবং অটো-সেভ
 app.get('/api/bby', async (req, res) => {
     const text = req.query.text ? req.query.text.toLowerCase().trim() : null;
     if (!text) return res.json({ error: "Please provide text!" });
 
     try {
-        // ১. আগে মেইন ডাটাবেজে চেক করুন
+        // ১. ডাটাবেজে উত্তর খুঁজুন
         const result = await Baby.findOne({ ask: text });
         
         if (result) {
             return res.json({ reply: result.ans, source: "database" });
         } else {
-            // ২. ডাটাবেজে না থাকলে Unanswered-এ সেভ করার চেষ্টা করুন
-            // (ব্যবহার করা হয়েছে async/await এবং error handling)
-            Unanswered.findOne({ question: text }).then(async (exist) => {
-                if (!exist) {
-                    const newEntry = new Unanswered({ question: text });
-                    await newEntry.save();
-                    console.log(`📌 Unanswered question saved: ${text}`);
-                }
-            }).catch(e => console.log("Save error:", e.message));
-
-            // ৩. এআই থেকে উত্তর নিয়ে রিপ্লাই দিন
-            const aiReply = await getAIResponse(text);
-            return res.json({ reply: aiReply, source: "Gemini AI" });
+            // ২. উত্তর না থাকলে Unanswered-এ সেভ করুন
+            const exist = await Unanswered.findOne({ question: text });
+            if (!exist) {
+                await Unanswered.create({ question: text });
+                console.log(`💾 New question saved to unanswered list: ${text}`);
+            }
+            
+            // ৩. Gemini বাদ, এখন সরাসরি একটি ডিফল্ট মেসেজ দিবে
+            return res.json({ 
+                reply: "Ei proshnotar uttor amar jana nei, ektu shikhiye dibe? (Use !teach command)", 
+                source: "unanswered_logger" 
+            });
         }
-    } catch (dbError) {
-        console.error("DB Error:", dbError);
-        const aiReply = await getAIResponse(text);
-        return res.json({ reply: aiReply, source: "AI (Error fallback)" });
+    } catch (err) {
+        console.error("API Error:", err.message);
+        res.json({ reply: "Database connection e shomosha hocche!", error: err.message });
     }
 });
 
-// ২. টিচ (Unanswered থেকে রিমুভ নিশ্চিত করা হয়েছে)
+// --- Teach Endpoint (নতুন উত্তর শিখলে unanswered থেকে ডিলিট হবে) ---
 app.get('/api/bby/teach', async (req, res) => {
     const { ask, ans, teacher } = req.query;
-    if (!ask || !ans) return res.json({ error: "Missing ask or ans" });
+    if (!ask || !ans) return res.json({ error: "Ask and Ans required!" });
 
     try {
         const askText = ask.toLowerCase().trim();
-        // মেইন ডাটাবেজে সেভ
         await Baby.create({ ask: askText, ans: ans.trim(), teacher: teacher || "Unknown" });
-        // unanswered থেকে ডিলিট
+        
+        // শেখানো হয়ে গেলে unanswered থেকে মুছে ফেলুন
         await Unanswered.deleteMany({ question: askText });
         
-        res.json({ status: "success", message: "Teached and removed from unanswered" });
+        res.json({ status: "success", message: "Shikhlam! Ekhon theke parbo." });
     } catch (err) {
         res.json({ status: "error", message: err.message });
     }
 });
 
-// ৩. প্রশ্ন ফেচ করার এন্ডপয়েন্ট
+// --- Unanswered Questions List (nt.js এর জন্য) ---
 app.get('/api/bby/questions', async (req, res) => {
-    const type = req.query.type;
     try {
-        if (type === 'repeat') {
-            const count = await Baby.countDocuments();
-            if (count === 0) return res.json({ question: "Kemon acho?" });
-            const random = Math.floor(Math.random() * count);
+        const count = await Unanswered.countDocuments();
+        if (count === 0) {
+            const bCount = await Baby.countDocuments();
+            const random = Math.floor(Math.random() * bCount);
             const entry = await Baby.findOne().skip(random);
-            res.json({ question: entry.ask });
-        } else {
-            const count = await Unanswered.countDocuments();
-            if (count === 0) {
-                // নতুন প্রশ্ন না থাকলে ডাটাবেজ থেকে র্যান্ডম দিবে
-                const bCount = await Baby.countDocuments();
-                const bRandom = Math.floor(Math.random() * bCount);
-                const bEntry = await Baby.findOne().skip(bRandom);
-                return res.json({ question: bEntry ? bEntry.ask : "Kemon acho?" });
-            }
-            const random = Math.floor(Math.random() * count);
-            const entry = await Unanswered.findOne().skip(random);
-            res.json({ question: entry.question });
+            return res.json({ question: entry ? entry.ask : "Kemon acho?" });
         }
+        const random = Math.floor(Math.random() * count);
+        const entry = await Unanswered.findOne().skip(random);
+        res.json({ question: entry.question });
     } catch (err) {
-        res.json({ error: "Error fetching" });
+        res.json({ error: "Error fetching questions" });
     }
 });
 
-app.get('/', (req, res) => res.json({ status: "running" }));
+app.get('/', (req, res) => res.json({ status: "running", mode: "clean_learning" }));
 
-app.listen(PORT, () => console.log(`🚀 NAWAB-API on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 NAWAB-API (No AI Mode) running on port ${PORT}`));
